@@ -10,7 +10,7 @@ class GurobiOptimizationFramework:
     使用Gurobi内置回调函数处理延迟约束，支持初始解
     """
     
-    def __init__(self, gurobi_params: Optional[Dict] = None, threshold: float = 1e-6):
+    def __init__(self, target_model, gurobi_params: Optional[Dict] = None, threshold: float = 1e-6):
         """
         初始化优化框架
         
@@ -18,6 +18,8 @@ class GurobiOptimizationFramework:
             gurobi_params: Gurobi参数字典
             threshold: 变量阈值，低于此值需要重新构造问题
         """
+        self.target_model = target_model
+
         self.gurobi_params = gurobi_params or {}
         self.threshold = threshold
         self.model = None
@@ -34,12 +36,12 @@ class GurobiOptimizationFramework:
         # 初始解
         self.initial_solution: Optional[Dict[str, Any]] = None
         
-    def set_initial_solution(self, initial_solution: Dict[str, Any]):
+    def set_initial_solution(self, initial_solution: np.ndarray):
         """
         设置初始解
         
         Args:
-            initial_solution: 初始解字典，格式与变量定义一致
+            initial_solution: 初始解向量，numpy数组格式
         """
         self.initial_solution = initial_solution
     
@@ -366,33 +368,25 @@ class GurobiOptimizationFramework:
 
 # 使用示例和辅助函数
 
-def example_model_construction_function(current_solution, problem_params):
+def model_construction_function(current_solution, tEnd, problem_params):
     """
-    示例统一模型构建函数
-    
     Args:
-        current_solution: 当前解（首次构建时可能为None）
+        current_solution: 当前解
         problem_params: 问题参数
         
     Returns:
         (variables_def, objective_expr, constraints): 变量定义、目标函数、约束列表
     """
-    # TODO: 根据您的具体问题实现模型构建逻辑
+
+    # 从初始解获取变量维度
+    if current_solution is None:
+        raise ValueError("必须提供初始解来定义变量维度")
     
-    # 变量定义示例
-    # 格式: 'var_name': (lower_bound, upper_bound, var_type, shape, initial_values)
+    n = len(current_solution)  # 获取变量维度
+    # 定义n维连续变量向量
     variables_def = {
-        'x': (0, 10, GRB.CONTINUOUS, None),  # 单个连续变量
-        'y': (0, 5, GRB.CONTINUOUS, None),   # 单个连续变量
-        'z': (0, 1, GRB.BINARY, (3, 4)),    # 3x4的二进制变量矩阵
+        'Dt': (0, tEnd+1, GRB.CONTINUOUS, (n,), current_solution),  # n维连续变量向量，使用初始解
     }
-    
-    # 如果有当前解，可能需要根据当前解调整变量定义
-    if current_solution is not None:
-        # 例如：根据当前解的某些值来修改变量边界
-        # if current_solution['x'] < 0.5:
-        #     variables_def['x'] = (0, 20, GRB.CONTINUOUS, None)
-        pass
     
     # 目标函数定义
     def objective_expr(variables):
@@ -456,11 +450,7 @@ if __name__ == "__main__":
     )
     
     # 设置初始解（可选）
-    initial_solution = {
-        'x': 2.0,
-        'y': 3.0,
-        'z': {(i, j): 0 for i in range(3) for j in range(4)}
-    }
+    # initial_solution = 
     optimizer.set_initial_solution(initial_solution)
     
     # 设置约束检查函数

@@ -1,5 +1,17 @@
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
+from dataclasses import dataclass
+
+
+def pos2idx(x: int, y: int, z: int, nx: int, ny: int, nz: int) -> int:
+    return z * (nx * ny) + y * nx + x
+    
+
+def idx2pos(idx: int, nx: int, ny: int, nz: int) -> Tuple[int, int, int]:
+    z = idx // (nx * ny)
+    y = (idx % (nx * ny)) // nx
+    x = idx % nx
+    return x, y, z
 
 class Model:
     """
@@ -233,4 +245,18 @@ class OperationTime:
     
     def __repr__(self) -> str:
         return self.__str__()
+    
 
+
+class subModelPara:
+    def __init__(self, posStart: Tuple[int, int, int], modelSize: Tuple[int, int, int]):
+        self.posStart = posStart
+        self.modelSize = modelSize
+    
+    def getIdxList(self, model: Model) -> List[int]:
+        idxList = []
+        for z in range(self.posStart[2], self.posStart[2] + self.modelSize[2]):
+            for y in range(self.posStart[1], self.posStart[1] + self.modelSize[1]):
+                for x in range(self.posStart[0], self.posStart[0] + self.modelSize[0]):
+                    idxList.append(pos2idx(x, y, z, model.nx, model.ny, model.nz))
+        return idxList

@@ -1,6 +1,7 @@
 import numpy as np
 from typing import Tuple, Optional, List
 from dataclasses import dataclass
+from optCons import findLarger
 
 
 def pos2idx(x: int, y: int, z: int, nx: int, ny: int, nz: int) -> int:
@@ -33,11 +34,39 @@ class Model:
         
         # 初始化三维0/1矩阵，维度为(nz, ny, nx)，默认全为0
         self.state_matrix = np.zeros((nz, ny, nx), dtype=int)
+        self.tempState=-1*np.ones((nz, ny, nx), dtype=int)
     
     @property
     def dimensions(self) -> Tuple[int, int, int]:
         """返回模型的三个方向尺寸 (nx, ny, nz)"""
         return (self.nx, self.ny, self.nz)
+    
+    def initTempState(self):
+        """
+        初始化临时状态矩阵
+        """
+        self.tempState.fill(-1)
+
+    def updateTempState(self, x: int, y: int, z: int, tNow: float, tIdx):
+        if self.tempState[z,y,z] != -1:
+            return -1
+        
+        tEndPos, isTNow=findLarger(tIdx, tNow)
+        if isTNow:
+            return 0
+        else:
+            if tEndPos==0:
+                self.tempState[z,y,x]=0
+                return tIdx[0]-tNow
+            elif tEndPos==2:
+                self.tempState[z,y,x]=0
+                return tNow-tIdx[1]
+            else:
+                self.tempState[z,y,x]=1
+                return min(tNow-tIdx[0], tIdx[1]-tNow)
+
+
+
     
     def set_state(self, x: int, y: int, z: int, value: int):
         """

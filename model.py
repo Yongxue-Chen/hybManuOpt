@@ -35,6 +35,9 @@ class Model:
         # 初始化三维0/1矩阵，维度为(nz, ny, nx)，默认全为0
         self.state_matrix = np.zeros((nz, ny, nx), dtype=int)
         self.tempState=-1*np.ones((nz, ny, nx), dtype=int)
+
+        # some tool variables
+        self.AMToolLength=10
     
     @property
     def dimensions(self) -> Tuple[int, int, int]:
@@ -51,20 +54,37 @@ class Model:
         if self.tempState[z,y,z] != -1:
             return -1
         
-        tEndPos, isTNow=findLarger(tIdx, tNow)
+        tNowPos, isTNow=findLarger(tIdx, tNow)
         if isTNow:
             return 0
         else:
-            if tEndPos==0:
-                self.tempState[z,y,x]=0
+            self.tempState[z,y,x]=tNowPos
+            if tNowPos==0:
                 return tIdx[0]-tNow
-            elif tEndPos==2:
-                self.tempState[z,y,x]=0
+            elif tNowPos==2:
                 return tNow-tIdx[1]
             else:
-                self.tempState[z,y,x]=1
                 return min(tNow-tIdx[0], tIdx[1]-tNow)
 
+    def getAMToolVoxelIdx(self, voxelIdx: int):
+        x,y,z=idx2pos(voxelIdx, self.nx, self.ny, self.nz)
+        AMToolVoxelIdx=[]
+        
+        idxToolRootStart = pos2idx(0,0,z+self.AMToolLength, self.nx, self.ny, self.nz)
+
+        # 从刀尖点到刀根点，刀具直径为1voxel
+        idxTool=voxelIdx+self.nx*self.ny
+        while idxTool < min(idxToolRootStart, self.nx*self.ny*self.nz):
+            AMToolVoxelIdx.append(idxTool)
+            idxTool+=self.nx*self.ny
+        
+        # 从刀根点高度开始，所有更上层的voxel都被刀具占用
+        if idxToolRootStart < self.nx*self.ny*self.nz:
+            for idxTool in range(idxToolRootStart, self.nx*self.ny*self.nz):
+                AMToolVoxelIdx.append(idxTool)
+        
+        return AMToolVoxelIdx
+        
 
 
     

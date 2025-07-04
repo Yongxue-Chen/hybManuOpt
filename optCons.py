@@ -32,7 +32,7 @@ def consHMLN(initTime: OperationTime, subModelPara: subModelPara, targetModel: M
         targetModel.initTempState() # initialize temp state matrix, to save state at tNow
         # constraint for supporting
         if yPos>0:
-            satisfied, AElementTmp, AColTmp, bElementTmp = consAMSupport(initTime, targetModel, tNow, tEnd, idx)
+            satisfied, AElementTmp, AColTmp, bElementTmp = consAMSupport(initTime, targetModel, tNow, idx)
             if not satisfied:
                 return False, AElement, ACol, bElement
             AElement.extend(AElementTmp)
@@ -40,7 +40,13 @@ def consHMLN(initTime: OperationTime, subModelPara: subModelPara, targetModel: M
             bElement.extend(bElementTmp)
 
         # constraint for collision-free
-
+        if yPos<targetModel.ny-1:
+            satisfied, AElementTmp, AColTmp, bElementTmp = consAMCollisionFree(initTime, targetModel, tNow, idx)
+            if not satisfied:
+                return False, AElement, ACol, bElement
+            AElement.extend(AElementTmp)
+            ACol.extend(AColTmp)
+            bElement.extend(bElementTmp)
 
         # constraint for SM
         if tIdx[1]>tEnd:
@@ -98,7 +104,7 @@ def consState(tIdx, targetModel: Model, tEnd: float, voxelIdx: int):
     
     return satisfied, AElement, ACol, bElement
 
-def consAMSupport(initTime: OperationTime, targetModel: Model, tNow: float, tEnd: float, voxelIdx: int):
+def consAMSupport(initTime: OperationTime, targetModel: Model, tNow: float, voxelIdx: int):
     x,y,z=idx2pos(voxelIdx, targetModel.nx, targetModel.ny, targetModel.nz)
     if y==0:
         return True, [], [], []
@@ -169,22 +175,22 @@ def checkSupport(x: int, y: int, z: int, tNow: float, initTime: OperationTime, t
     if x>0:
         idx=pos2idx(x-1, y, z-1, targetModel.nx, targetModel.ny, targetModel.nz)
         timeGap[0]=targetModel.updateTempState(x-1, y, z-1, tNow, initTime.time_matrix[idx])
-        supportState[0]=max(0, targetModel.tempState[z-1,y,x-1])
+        supportState[0]=1 if targetModel.tempState[z-1,y,x-1]==1 else 0
     if y>0:
         idx=pos2idx(x, y-1, z-1, targetModel.nx, targetModel.ny, targetModel.nz)
         timeGap[1]=targetModel.updateTempState(x, y-1, z-1, tNow, initTime.time_matrix[idx])
-        supportState[1]=max(0, targetModel.tempState[z-1,y-1,x])
+        supportState[1]=1 if targetModel.tempState[z-1,y-1,x]==1 else 0
     if x<targetModel.nx-1:
         idx=pos2idx(x+1, y, z-1, targetModel.nx, targetModel.ny, targetModel.nz)
         timeGap[2]=targetModel.updateTempState(x+1, y, z-1, tNow, initTime.time_matrix[idx])
-        supportState[2]=max(0, targetModel.tempState[z-1,y,x+1])
+        supportState[2]=1 if targetModel.tempState[z-1,y,x+1]==1 else 0
     if y<targetModel.ny-1:
         idx=pos2idx(x, y+1, z-1, targetModel.nx, targetModel.ny, targetModel.nz)
         timeGap[3]=targetModel.updateTempState(x, y+1, z-1, tNow, initTime.time_matrix[idx])
-        supportState[3]=max(0, targetModel.tempState[z-1,y+1,x])
+        supportState[3]=1 if targetModel.tempState[z-1,y+1,x]==1 else 0
     idx=pos2idx(x, y, z-1, targetModel.nx, targetModel.ny, targetModel.nz)
     timeGap[4]=targetModel.updateTempState(x, y, z-1, tNow, initTime.time_matrix[idx])
-    supportState[4]=max(0, targetModel.tempState[z-1,y,x])
+    supportState[4]=1 if targetModel.tempState[z-1,y,x]==1 else 0
     
     return supportState, timeGap
 
@@ -204,3 +210,33 @@ def findLarger(manuTime, tCheck: float):
             return i, time == tCheck
     return manuTime.shape[0], False  # 如果没有找到大于等于tCheck的元素
     
+def consAMCollisionFree(initTime: OperationTime, targetModel: Model, tNow: float, voxelIdx: int):
+    toolVoxelIdx=targetModel.getAMToolVoxelIdx(voxelIdx)
+
+    AElement=[]
+    ACol=[]
+    bElement=[]
+
+    satisfied=True
+
+    for idxTool in toolVoxelIdx:
+        xTool,yTool,zTool=idx2pos(idxTool, targetModel.nx, targetModel.ny, targetModel.nz)
+        timeGap=targetModel.updateTempState(xTool,yTool,zTool,tNow,initTime.time_matrix[idxTool])
+        
+        if targetModel.tempState[zTool,yTool,xTool]<0 or targetModel.tempState[zTool,yTool,xTool]==1:
+            return False, [], [], []
+        
+        if targetModel.tempState[zTool,yTool,xTool]==0:
+            AElement.append([-1,1])
+            ACol.append([2*idxTool, 2*voxelIdx])
+            bElement.append(0)
+        else:
+            AElement.append([1,1,-1])
+            ACol.append([2*idxTool, 2*idxTool+1, 2*voxelIdx])
+            bElement.append(0)
+    
+    return satisfied, AElement, ACol, bElement
+    
+
+
+

@@ -37,7 +37,7 @@ class Model:
         self.tempState=-1*np.ones((nz, ny, nx), dtype=int)
 
         # some tool variables
-        self.AMToolLength=10
+        self.AMToolParas = {'TipLength': 3, 'TipAngle': 45, 'BodySize': 100}
     
     @property
     def dimensions(self) -> Tuple[int, int, int]:
@@ -66,28 +66,60 @@ class Model:
             else:
                 return min(tNow-tIdx[0], tIdx[1]-tNow)
 
-    def getAMToolVoxelIdx(self, voxelIdx: int):
-        x,y,z=idx2pos(voxelIdx, self.nx, self.ny, self.nz)
-        AMToolVoxelIdx=[]
+    # def getAMToolVoxelIdx(self, voxelIdx: int):
+    #     x,y,z=idx2pos(voxelIdx, self.nx, self.ny, self.nz)
+    #     AMToolVoxelIdx=[]
         
-        idxToolRootStart = pos2idx(0,0,z+self.AMToolLength, self.nx, self.ny, self.nz)
+    #     idxToolRootStart = pos2idx(0,0,z+self.AMToolLength, self.nx, self.ny, self.nz)
 
-        # 从刀尖点到刀根点，刀具直径为1voxel
-        idxTool=voxelIdx+self.nx*self.ny
-        while idxTool < min(idxToolRootStart, self.nx*self.ny*self.nz):
-            AMToolVoxelIdx.append(idxTool)
-            idxTool+=self.nx*self.ny
+    #     # 从刀尖点到刀根点，刀具直径为1voxel
+    #     idxTool=voxelIdx+self.nx*self.ny
+    #     while idxTool < min(idxToolRootStart, self.nx*self.ny*self.nz):
+    #         AMToolVoxelIdx.append(idxTool)
+    #         idxTool+=self.nx*self.ny
         
-        # 从刀根点高度开始，所有更上层的voxel都被刀具占用
-        if idxToolRootStart < self.nx*self.ny*self.nz:
-            for idxTool in range(idxToolRootStart, self.nx*self.ny*self.nz):
-                AMToolVoxelIdx.append(idxTool)
+    #     # 从刀根点高度开始，所有更上层的voxel都被刀具占用
+    #     if idxToolRootStart < self.nx*self.ny*self.nz:
+    #         for idxTool in range(idxToolRootStart, self.nx*self.ny*self.nz):
+    #             AMToolVoxelIdx.append(idxTool)
+        
+    #     return AMToolVoxelIdx
+
+    def getAMToolVoxelIdx(self, voxelIdx: int):
+        """
+        获取刀具占用voxel的idx
+        """
+        x, y, z = idx2pos(voxelIdx, self.nx, self.ny, self.nz)
+        AMToolVoxelIdx = []
+        
+        if self.AMToolParas['TipLength'] > 1:
+            for zTool in range(z + 1, min(z + self.AMToolParas['TipLength'], self.nz)):
+                rTmp = (zTool - z) * np.tan(self.AMToolParas['TipAngle'] * np.pi / 180)
+                xToolStart = int(x - rTmp)  # 转换为整数
+                xToolEnd = int(x + rTmp)
+                yToolStart = int(y - rTmp)
+                yToolEnd = int(y + rTmp)
+                
+                for xTool in range(max(0, xToolStart), min(self.nx, xToolEnd + 1)):
+                    for yTool in range(max(0, yToolStart), min(self.ny, yToolEnd + 1)):
+                        if np.linalg.norm([xTool - x, yTool - y]) <= rTmp:
+                            AMToolVoxelIdx.append(pos2idx(xTool, yTool, zTool, self.nx, self.ny, self.nz))
+        
+        if z + self.AMToolParas['TipLength'] < self.nz:
+            for zTool in range(z + self.AMToolParas['TipLength'], self.nz):
+                # 添加边界检查并转换为整数
+                xStart = max(0, int(x - self.AMToolParas['BodySize']/2))
+                xEnd = min(self.nx, int(x + self.AMToolParas['BodySize']/2 + 1))
+                yStart = max(0, int(y - self.AMToolParas['BodySize']/2))
+                yEnd = min(self.ny, int(y + self.AMToolParas['BodySize']/2 + 1))
+                
+                for xTool in range(xStart, xEnd):
+                    for yTool in range(yStart, yEnd):
+                        AMToolVoxelIdx.append(pos2idx(xTool, yTool, zTool, self.nx, self.ny, self.nz))
         
         return AMToolVoxelIdx
         
 
-
-    
     def set_state(self, x: int, y: int, z: int, value: int):
         """
         设置指定位置的状态值

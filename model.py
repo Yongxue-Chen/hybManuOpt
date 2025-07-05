@@ -38,6 +38,7 @@ class Model:
 
         # some tool variables
         self.AMToolParas = {'TipLength': 3, 'TipAngle': 45, 'BodySize': 100}
+        self.SMToolParas = {'ToolLength': 10, 'BodyRadius': 100}
     
     @property
     def dimensions(self) -> Tuple[int, int, int]:
@@ -118,8 +119,149 @@ class Model:
                         AMToolVoxelIdx.append(pos2idx(xTool, yTool, zTool, self.nx, self.ny, self.nz))
         
         return AMToolVoxelIdx
+    
+    def getSMToolVoxelIdx(self, voxelIdx: int, toolDirection: int):
+        """
+        获取减材制造工具占用的voxel索引
         
+        Args:
+            voxelIdx: 当前体素索引
+            toolDirection: 工具方向 (0: 指向z负方向)
+        
+        Returns:
+            SMToolVoxelIdx: 工具占用的体素索引列表
+        """
+        x, y, z = idx2pos(voxelIdx, self.nx, self.ny, self.nz)
+        SMToolVoxelIdx = []
 
+        match toolDirection:
+            case 0:
+                # 指向z负方向的工具
+                
+                # 第一部分：切削工具部分(从当前位置向上延伸ToolLength长度)
+                idxCutterRoot = voxelIdx + self.SMToolParas['ToolLength'] * self.nx * self.ny
+                idxTool = voxelIdx + self.nx * self.ny
+                
+                while idxTool < min(idxCutterRoot, self.nx * self.ny * self.nz):
+                    SMToolVoxelIdx.append(idxTool)
+                    idxTool += self.nx * self.ny
+                
+                # 第二部分：工具主体部分(从切削部分之后到模型顶部的圆柱体)
+                if z + self.SMToolParas['ToolLength'] < self.nz:
+                    for zTool in range(z + self.SMToolParas['ToolLength'], self.nz):
+                        # 添加边界检查和整数转换
+                        xStart = max(0, x - self.SMToolParas['BodyRadius'])
+                        xEnd = min(self.nx, x + self.SMToolParas['BodyRadius'] + 1)
+                        yStart = max(0, y - self.SMToolParas['BodyRadius'])
+                        yEnd = min(self.ny, y + self.SMToolParas['BodyRadius'] + 1)
+                        
+                        for xTool in range(xStart, xEnd):
+                            for yTool in range(yStart, yEnd):
+                                # 检查是否在圆形范围内
+                                if np.linalg.norm([xTool - x, yTool - y]) <= self.SMToolParas['BodyRadius']:
+                                    SMToolVoxelIdx.append(pos2idx(xTool, yTool, zTool, self.nx, self.ny, self.nz))
+            
+            case 1:
+                # 指向x正方向的工具
+                
+                # 第一部分：切削工具部分(从当前位置向x负方向延伸ToolLength长度)
+                cutterStart = voxelIdx - min(x, self.SMToolParas['ToolLength'] - 1)
+                for idxTool in range(cutterStart, voxelIdx):
+                    SMToolVoxelIdx.append(idxTool)
+                
+                # 第二部分：工具主体部分(可以根据需要添加)
+                if x-self.SMToolParas['ToolLength']>=0:
+                    if z<=self.SMToolParas['BodyRadius']:
+                        # 与底部基础碰撞
+                        return [], False
+                    
+                    yStart=max(0, y-self.SMToolParas['BodyRadius'])
+                    yEnd=min(self.ny, y+self.SMToolParas['BodyRadius']+1)
+                    zStart=max(0, z-self.SMToolParas['BodyRadius'])
+                    zEnd=min(self.nz, z+self.SMToolParas['BodyRadius']+1)
+
+                    for xTool in range(0, x-self.SMToolParas['ToolLength']+1):
+                        for yTool in range(yStart, yEnd):
+                            for zTool in range(zStart, zEnd):
+                                if np.linalg.norm([yTool-y, zTool-z])<=self.SMToolParas['BodyRadius']:
+                                    SMToolVoxelIdx.append(pos2idx(xTool, yTool, zTool, self.nx, self.ny, self.nz))
+
+            case 2:
+                # 指向x负方向
+
+                # 第一部分：切削工具部分(从当前位置向x正方向延伸ToolLength长度)
+                cutterEnd = voxelIdx + min(self.nx-1-x, self.SMToolParas['ToolLength']-1)
+                for idxTool in range(voxelIdx, cutterEnd+1):
+                    SMToolVoxelIdx.append(idxTool)
+                
+                # 第二部分：工具主体部分(可以根据需要添加)
+                if x+self.SMToolParas['ToolLength']<self.nx:
+                    if z<=self.SMToolParas['BodyRadius']:
+                        return [], False
+                    
+                    yStart=max(0, y-self.SMToolParas['BodyRadius'])
+                    yEnd=min(self.ny, y+self.SMToolParas['BodyRadius']+1)
+                    zStart=max(0, z-self.SMToolParas['BodyRadius'])
+                    zEnd=min(self.nz, z+self.SMToolParas['BodyRadius']+1)
+
+                    for xTool in range(x+self.SMToolParas['ToolLength'], self.nx):
+                        for yTool in range(yStart, yEnd):
+                            for zTool in range(zStart, zEnd):
+                                if np.linalg.norm([yTool-y, zTool-z])<=self.SMToolParas['BodyRadius']:
+                                    SMToolVoxelIdx.append(pos2idx(xTool, yTool, zTool, self.nx, self.ny, self.nz))
+
+            case 3:
+                # 指向y正方向
+
+                # 第一部分：切削工具部分(从当前位置向y负方向延伸ToolLength长度)
+                cutterLength=min(y, self.SMToolParas['ToolLength']-1)
+                for length in range(1, cutterLength+1):
+                    SMToolVoxelIdx.append(voxelIdx-length*self.nx)
+
+                # 第二部分：工具主体部分(可以根据需要添加)
+                if y-self.SMToolParas['ToolLength']>=0:
+                    if z<=self.SMToolParas['BodyRadius']:
+                        return [], False
+                    
+                    xStart=max(0, x-self.SMToolParas['BodyRadius'])
+                    xEnd=min(self.nx, x+self.SMToolParas['BodyRadius']+1)
+                    zStart=max(0, z-self.SMToolParas['BodyRadius'])
+                    zEnd=min(self.nz, z+self.SMToolParas['BodyRadius']+1)
+                    for yTool in range(0, y-self.SMToolParas['ToolLength']+1):
+                        for xTool in range(xStart, xEnd):
+                            for zTool in range(zStart, zEnd):
+                                if np.linalg.norm([xTool-x, zTool-z])<=self.SMToolParas['BodyRadius']:
+                                    SMToolVoxelIdx.append(pos2idx(xTool, yTool, zTool, self.nx, self.ny, self.nz))
+            
+            case 4:
+                # 指向y负方向
+
+                # 第一部分：切削工具部分(从当前位置向y正方向延伸ToolLength长度)
+                cutterLength=min(self.ny-1-y, self.SMToolParas['ToolLength']-1)
+                for length in range(1, cutterLength+1):
+                    SMToolVoxelIdx.append(voxelIdx+length*self.nx)
+
+                # 第二部分：工具主体部分(可以根据需要添加)
+                if y+self.SMToolParas['ToolLength']<self.ny:
+                    if z<=self.SMToolParas['BodyRadius']:
+                        return [], False
+                    
+                    xStart=max(0, x-self.SMToolParas['BodyRadius'])
+                    xEnd=min(self.nx, x+self.SMToolParas['BodyRadius']+1)
+                    zStart=max(0, z-self.SMToolParas['BodyRadius'])
+                    zEnd=min(self.nz, z+self.SMToolParas['BodyRadius']+1)
+                    for yTool in range(y+self.SMToolParas['ToolLength'], self.ny):
+                        for xTool in range(xStart, xEnd):
+                            for zTool in range(zStart, zEnd):
+                                if np.linalg.norm([xTool-x, zTool-z])<=self.SMToolParas['BodyRadius']:
+                                    SMToolVoxelIdx.append(pos2idx(xTool, yTool, zTool, self.nx, self.ny, self.nz))
+            case _:
+                # 错误方向
+                print("错误方向")
+                return [], False
+        
+        return SMToolVoxelIdx, True
+    
     def set_state(self, x: int, y: int, z: int, value: int):
         """
         设置指定位置的状态值

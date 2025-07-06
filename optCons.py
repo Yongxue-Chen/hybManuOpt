@@ -31,7 +31,7 @@ def consHMLN(initTime: OperationTime, subModelPara: subModelPara, targetModel: M
         tNow=tIdx[0]
         targetModel.initTempState() # initialize temp state matrix, to save state at tNow
         # constraint for supporting
-        if yPos>0:
+        if zPos>0:
             satisfied, AElementTmp, AColTmp, bElementTmp = consAMSupport(initTime, targetModel, tNow, idx)
             if not satisfied:
                 return False, AElement, ACol, bElement
@@ -40,7 +40,7 @@ def consHMLN(initTime: OperationTime, subModelPara: subModelPara, targetModel: M
             bElement.extend(bElementTmp)
 
         # constraint for collision-free
-        if yPos<targetModel.ny-1:
+        if zPos<targetModel.nz-1:
             satisfied, AElementTmp, AColTmp, bElementTmp = consAMCollisionFree(initTime, targetModel, tNow, idx)
             if not satisfied:
                 return False, AElement, ACol, bElement
@@ -52,6 +52,13 @@ def consHMLN(initTime: OperationTime, subModelPara: subModelPara, targetModel: M
         if tIdx[1]>tEnd:
             continue
         # constraint for collision-free
+        if zPos<targetModel.nz-1 and xPos>0 and xPos<targetModel.nx-1 and yPos>0 and yPos<targetModel.ny-1:
+            satisfied, AElementTmp, AColTmp, bElementTmp = consSMCollisionFree(initTime, targetModel, tNow, idx)
+            if not satisfied:
+                return False, AElement, ACol, bElement
+            AElement.extend(AElementTmp)
+            ACol.extend(AColTmp)
+            bElement.extend(bElementTmp)
 
     return satisfied, AElement, ACol, bElement
 
@@ -238,5 +245,55 @@ def consAMCollisionFree(initTime: OperationTime, targetModel: Model, tNow: float
     return satisfied, AElement, ACol, bElement
     
 
+def consSMCollisionFree(initTime: OperationTime, targetModel: Model, tNow: float, voxelIdx: int):
+    x,y,z=idx2pos(voxelIdx, targetModel.nx, targetModel.ny, targetModel.nz)
+    
+    # 依次检查五个方向是否碰撞
+    toolIdxUsed=[]
+    toolDirectionUsed=-1
+    maxGap=-float('inf')
+    for toolDirection in range(5):
+        SMToolVoxelIdx, satisfied=targetModel.getSMToolVoxelIdx(voxelIdx, toolDirection)
+        if not satisfied:
+            # 碰撞
+            continue
 
+        miniTimeGap = float('inf')
+        for idxTool in SMToolVoxelIdx:
+            xTool,yTool,zTool=idx2pos(idxTool, targetModel.nx, targetModel.ny, targetModel.nz)
+            timeGap=targetModel.updateTempState(xTool,yTool,zTool,tNow,initTime.time_matrix[idxTool])
+            if targetModel.tempState[zTool,yTool,xTool]<0 or targetModel.tempState[zTool,yTool,xTool]==1:
+                # 碰撞
+                satisfied=False
+                break
+            if timeGap<miniTimeGap:
+                miniTimeGap=timeGap
+        
+        if not satisfied:
+            continue
+        if miniTimeGap>maxGap:
+            maxGap=miniTimeGap
+            toolIdxUsed=SMToolVoxelIdx
+            toolDirectionUsed=toolDirection
+    
+    if len(toolIdxUsed)==0:
+        return False, [], [], [], toolDirectionUsed
+    
+    AElement=[]
+    ACol=[]
+    bElement=[]
+    
+    for idxTool in toolIdxUsed:
+        if targetModel.tempState[zTool,yTool,xTool]==0:
+            AElement.append([-1,1])
+            ACol.append([2*idxTool, 2*voxelIdx])
+            bElement.append(0)
+        else:
+            AElement.append([1,1,-1])
+            ACol.append([2*idxTool, 2*idxTool+1, 2*voxelIdx])
+            bElement.append(0)
+    
+    return True, AElement, ACol, bElement, toolDirectionUsed
+            
+    
 

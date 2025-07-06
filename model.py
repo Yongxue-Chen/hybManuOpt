@@ -53,7 +53,12 @@ class Model:
 
     def updateTempState(self, x: int, y: int, z: int, tNow: float, tIdx):
         if self.tempState[z,y,z] != -1:
-            return -1
+            if self.tempState[z,y,z]==0:
+                return tIdx[0]-tNow
+            elif self.tempState[z,y,z]==2:
+                return tNow-tIdx[1]
+            else:
+                return min(tNow-tIdx[0], tIdx[1]-tNow)
         
         tNowPos, isTNow=findLarger(tIdx, tNow)
         if isTNow:

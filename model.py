@@ -19,7 +19,7 @@ class Model:
     模型类，包含三个方向的尺寸和三维0/1矩阵表示模型状态
     """
     
-    def __init__(self, nx: int, ny: int, nz: int):
+    def __init__(self, nx: int, ny: int, nz: int, tEnd: float):
         """
         初始化模型
         
@@ -31,6 +31,7 @@ class Model:
         self.nx = nx
         self.ny = ny
         self.nz = nz
+        self.tEnd = tEnd
         
         # 初始化三维0/1矩阵，维度为(nz, ny, nx)，默认全为0
         self.state_matrix = np.zeros((nz, ny, nx), dtype=int)

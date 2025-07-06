@@ -3,6 +3,8 @@ from gurobipy import GRB
 import numpy as np
 from typing import Callable, Any, Dict, List, Optional, Union, Tuple
 import time
+from model import Model, OperationTime
+from optCons import consHMLN
 
 class GurobiOptimizationFramework:
     """
@@ -368,16 +370,52 @@ class GurobiOptimizationFramework:
 
 # 使用示例和辅助函数
 
-def model_construction_function(current_solution, tEnd, problem_params):
+def create_linear_constraints_from_sparse_format(AElement, ACol, bElement, variables_dict, variable_name='Dt'):
+    """
+    将稀疏矩阵格式的线性不等式约束转换为 Gurobi 约束
+    
+    Args:
+        AElement: 包含向量 a 中不等于0的元素的值
+        ACol: 包含向量 a 中不等于0的元素的位置索引
+        bElement: 包含对应的 b 的值
+        variables_dict: Gurobi 变量字典
+        variable_name: 变量名称（默认为 'Dt'）
+        
+    Returns:
+        constraints: 可以直接添加到 Gurobi 模型的约束列表
+    """
+    constraints = []
+    
+    if len(AElement) != len(ACol):
+        raise ValueError("AElement 和 ACol 的长度必须相同")
+    
+    constraints = []
+    num_constraints = len(bElement)
+    
+    for i in range(num_constraints):
+        elementA=AElement[i]
+        elementCol=ACol[i]
+        elementB=bElement[i]
+
+        constraint_expr = gp.LinExpr()
+        for j in range(len(elementA)):
+            constraint_expr += elementA[j] * variables_dict[variable_name][elementCol[j]]
+        
+        # 添加约束 a'*Dt <= b
+        constraints.append(constraint_expr <= elementB)
+    
+    return constraints
+    
+def model_construction_function(current_solution, nx, ny, nz, tEnd):
     """
     Args:
         current_solution: 当前解
-        problem_params: 问题参数
+        nx, ny, nz: 模型维度
+        tEnd: 结束时间
         
     Returns:
         (variables_def, objective_expr, constraints): 变量定义、目标函数、约束列表
     """
-
     # 从初始解获取变量维度
     if current_solution is None:
         raise ValueError("必须提供初始解来定义变量维度")
@@ -388,27 +426,43 @@ def model_construction_function(current_solution, tEnd, problem_params):
         'Dt': (0, tEnd+1, GRB.CONTINUOUS, (n,), current_solution),  # n维连续变量向量，使用初始解
     }
     
-    # 目标函数定义
+    # construct currentOptTime
+    currentOptTime = OperationTime(nx, ny, nz)
+    currentOptTime.from_optimization_variables(current_solution)
+
+    # 目标函数
     def objective_expr(variables):
-        # TODO: 定义您的目标函数
-        # 示例：return variables['x'] + 2 * variables['y']
-        return variables['x'] + variables['y']
-    
+        w1 = 1.0
+        objective = 0.0
+        
+        # 最小化时间
+        for i in range(nx*ny*nz):
+            if current_solution[2*i] + current_solution[2*i+1] < tEnd:
+                # 访问Dt变量数组的第(2*i+1)个元素
+                objective += variables['Dt'][2*i+1]
+        
+        return w1 * objective
+
     # 约束定义
-    def constraint1(variables):
-        return variables['x'] + variables['y'] <= 8
+    satisfied, AElement, ACol, bElement = consHMLN(currentOptTime, nx, ny, nz, tEnd)
+    if not satisfied:
+        raise ValueError("Constraint not satisfied")
     
-    def constraint2(variables):
-        return variables['x'] - variables['y'] >= 0
+    # 创建约束函数
+    def create_constraints(variables):
+        """
+        创建线性不等式约束的函数
+        """
+        return create_linear_constraints_from_sparse_format(
+            AElement, ACol, bElement, variables, 'Dt'
+        )
     
-    constraints = [constraint1, constraint2]
+    # 约束列表
+    constraints = [create_constraints]
     
     # 根据当前解可能需要添加额外约束
     if current_solution is not None:
         # 例如：添加基于当前解的约束
-        # def additional_constraint(variables):
-        #     return variables['x'] >= current_solution['x'] * 0.8
-        # constraints.append(additional_constraint)
         pass
     
     return variables_def, objective_expr, constraints
@@ -461,7 +515,7 @@ if __name__ == "__main__":
     
     # 设置统一的模型构建函数
     optimizer.set_model_construction_function(
-        example_model_construction_function
+        model_construction_function
     )
     
     # 定义传递给构建函数的参数

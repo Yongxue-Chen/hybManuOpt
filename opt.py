@@ -35,8 +35,8 @@ class GurobiOptimizationFramework:
         self.callback_count = 0
         self.lazy_constraints_added = 0
         
-        # 初始解
-        self.initial_solution: Optional[Dict[str, Any]] = None
+        # 初始解 - 修改为numpy数组
+        self.initial_solution: Optional[np.ndarray] = None
         
     def set_initial_solution(self, initial_solution: np.ndarray):
         """
@@ -65,7 +65,7 @@ class GurobiOptimizationFramework:
         """
         self.model_construction_function = function
     
-    def create_model_from_construction_function(self, current_solution: Optional[Dict[str, Any]] = None,
+    def create_model_from_construction_function(self, current_solution: Optional[np.ndarray] = None,
                                               **kwargs) -> gp.Model:
         """
         使用统一的构建函数创建Gurobi模型
@@ -105,45 +105,28 @@ class GurobiOptimizationFramework:
             else:
                 raise ValueError(f"变量 {var_name} 配置格式错误")
             
-            if shape is None:
-                # 单个变量
-                var = model.addVar(lb=lb, ub=ub, vtype=vtype, name=var_name)
-                model._variables[var_name] = var
-                model._variable_mapping[var_name] = var
+            # 多维变量数组
+            if isinstance(shape, int):
+                shape = (shape,)
+            var_array = model.addVars(*shape, lb=lb, ub=ub, vtype=vtype, name=var_name)
+            model._variables[var_name] = var_array
+            
+            # 设置初始值 - 修改为处理numpy数组
+            for key in var_array.keys():
+                model._variable_mapping[f"{var_name}_{key}"] = var_array[key]
                 
-                # 设置初始值
                 if initial_values is not None:
-                    var.start = initial_values
-                elif current_solution and var_name in current_solution:
-                    var.start = current_solution[var_name]
-                elif self.initial_solution and var_name in self.initial_solution:
-                    var.start = self.initial_solution[var_name]
-                    
-            else:
-                # 多维变量数组
-                if isinstance(shape, int):
-                    shape = (shape,)
-                var_array = model.addVars(*shape, lb=lb, ub=ub, vtype=vtype, name=var_name)
-                model._variables[var_name] = var_array
-                
-                # 设置初始值
-                for key in var_array.keys():
-                    model._variable_mapping[f"{var_name}_{key}"] = var_array[key]
-                    
-                    if initial_values is not None:
-                        if isinstance(initial_values, dict) and key in initial_values:
+                    if isinstance(initial_values, np.ndarray) and key[0] < len(initial_values):
+                        var_array[key].start = initial_values[key[0]]
+                    elif hasattr(initial_values, '__getitem__'):
+                        try:
                             var_array[key].start = initial_values[key]
-                        elif hasattr(initial_values, '__getitem__'):
-                            try:
-                                var_array[key].start = initial_values[key]
-                            except:
-                                pass
-                    elif current_solution and var_name in current_solution:
-                        if isinstance(current_solution[var_name], dict) and key in current_solution[var_name]:
-                            var_array[key].start = current_solution[var_name][key]
-                    elif self.initial_solution and var_name in self.initial_solution:
-                        if isinstance(self.initial_solution[var_name], dict) and key in self.initial_solution[var_name]:
-                            var_array[key].start = self.initial_solution[var_name][key]
+                        except:
+                            pass
+                elif current_solution is not None and key[0] < len(current_solution):
+                    var_array[key].start = current_solution[key[0]]
+                elif self.initial_solution is not None and key[0] < len(self.initial_solution):
+                    var_array[key].start = self.initial_solution[key[0]]
         
         # 更新模型以添加变量
         model.update()
@@ -178,16 +161,22 @@ class GurobiOptimizationFramework:
         if where == GRB.Callback.MIPSOL:
             self.callback_count += 1
             
-            # 获取当前解
-            current_solution = {}
+            # 获取当前解 - 修改为构造numpy数组
+            current_solution = None
             for var_name, var_obj in model._variables.items():
                 if hasattr(var_obj, 'select'):  # 多维变量
-                    current_solution[var_name] = {
-                        key: model.cbGetSolution(var_obj[key]) 
-                        for key in var_obj.keys()
-                    }
+                    # 假设主要变量是多维数组，构造numpy向量
+                    if var_name == 'Dt':  # 假设主要变量名为 'Dt'
+                        solution_values = []
+                        for key in sorted(var_obj.keys()):
+                            solution_values.append(model.cbGetSolution(var_obj[key]))
+                        current_solution = np.array(solution_values)
+                        break
                 else:  # 单个变量
-                    current_solution[var_name] = model.cbGetSolution(var_obj)
+                    # 如果是单个变量，创建包含单个元素的数组
+                    if var_name == 'Dt':
+                        current_solution = np.array([model.cbGetSolution(var_obj)])
+                        break
             
             # 检查约束并添加延迟约束
             constraints_added_this_callback = 0
@@ -213,27 +202,20 @@ class GurobiOptimizationFramework:
             if constraints_added_this_callback > 0:
                 print(f"回调 {self.callback_count}: 添加了 {constraints_added_this_callback} 个延迟约束")
     
-    def check_threshold_condition(self, solution: Dict[str, Any]) -> bool:
+    def check_threshold_condition(self, solution: np.ndarray) -> bool:
         """
         检查是否有变量值低于阈值
         
         Args:
-            solution: 当前解
+            solution: 当前解，numpy数组
             
         Returns:
             是否需要重新构造模型
         """
-        for var_name, var_value in solution.items():
-            if isinstance(var_value, dict):
-                # 处理多维变量
-                for index, value in var_value.items():
-                    if isinstance(value, (int, float)) and 0 < value < self.threshold:
-                        return True
-            else:
-                # 处理单个变量
-                if isinstance(var_value, (int, float)) and 0 < var_value < self.threshold:
-                    return True
-        
+        # 检查numpy数组中的所有元素
+        for value in solution:
+            if isinstance(value, (int, float)) and 0 < value < self.threshold:
+                return True
         return False
     
     def optimize(self, construction_kwargs: Optional[Dict] = None,
@@ -252,7 +234,7 @@ class GurobiOptimizationFramework:
             construction_kwargs = {}
             
         reconstruction_count = 0
-        current_solution = self.initial_solution
+        current_solution = self.initial_solution  # 现在是numpy数组
         
         while reconstruction_count <= max_reconstructions:
             print(f"开始第 {reconstruction_count + 1} 次建模和优化...")
@@ -264,9 +246,7 @@ class GurobiOptimizationFramework:
             try:
                 # 使用统一的构建函数创建模型
                 model = self.create_model_from_construction_function(
-                    current_solution=current_solution,
-                    **construction_kwargs
-                )
+                    current_solution=current_solution)
                 
                 # 设置延迟约束回调
                 model.setParam('LazyConstraints', 1)
@@ -281,7 +261,7 @@ class GurobiOptimizationFramework:
                     'status': model.status,
                     'solve_time': solve_time,
                     'objective_value': None,
-                    'variables': {},
+                    'variables': None,  # 修改为存储numpy数组
                     'success': False,
                     'callback_count': self.callback_count,
                     'lazy_constraints_added': self.lazy_constraints_added,
@@ -292,17 +272,21 @@ class GurobiOptimizationFramework:
                     solution_info['success'] = True
                     solution_info['objective_value'] = model.objVal
                     
-                    # 提取变量值
-                    current_solution = {}
+                    # 提取变量值 - 修改为构造numpy数组
                     for var_name, var_obj in model._variables.items():
                         if hasattr(var_obj, 'select'):  # 多维变量
-                            current_solution[var_name] = {
-                                key: var_obj[key].x for key in var_obj.keys()
-                            }
-                            solution_info['variables'][var_name] = current_solution[var_name]
+                            if var_name == 'Dt':  # 假设主要变量名为 'Dt'
+                                solution_values = []
+                                for key in sorted(var_obj.keys()):
+                                    solution_values.append(var_obj[key].x)
+                                current_solution = np.array(solution_values)
+                                solution_info['variables'] = current_solution
+                                break
                         else:  # 单个变量
-                            current_solution[var_name] = var_obj.x
-                            solution_info['variables'][var_name] = current_solution[var_name]
+                            if var_name == 'Dt':
+                                current_solution = np.array([var_obj.x])
+                                solution_info['variables'] = current_solution
+                                break
                     
                     # 记录优化历史
                     self.optimization_history.append(solution_info.copy())
@@ -409,7 +393,7 @@ def create_linear_constraints_from_sparse_format(AElement, ACol, bElement, varia
 def model_construction_function(current_solution, nx, ny, nz, tEnd):
     """
     Args:
-        current_solution: 当前解
+        current_solution: 当前解，numpy数组
         nx, ny, nz: 模型维度
         tEnd: 结束时间
         
@@ -460,11 +444,6 @@ def model_construction_function(current_solution, nx, ny, nz, tEnd):
     # 约束列表
     constraints = [create_constraints]
     
-    # 根据当前解可能需要添加额外约束
-    if current_solution is not None:
-        # 例如：添加基于当前解的约束
-        pass
-    
     return variables_def, objective_expr, constraints
 
 def example_constraint_check_function(variables, solution):
@@ -473,7 +452,7 @@ def example_constraint_check_function(variables, solution):
     
     Args:
         variables: 变量对象字典
-        solution: 当前解
+        solution: 当前解，numpy数组
         
     Returns:
         (is_satisfied, lazy_constraints): 是否满足约束，以及需要添加的延迟约束
@@ -484,9 +463,9 @@ def example_constraint_check_function(variables, solution):
     lazy_constraints = []
     
     # 示例约束检查逻辑：
-    # if solution['x'] + solution['y'] > 10:
+    # if solution[0] + solution[1] > 10:
     #     is_satisfied = False
-    #     lazy_constraints.append(variables['x'] + variables['y'] <= 10)
+    #     lazy_constraints.append(variables['Dt'][0] + variables['Dt'][1] <= 10)
     
     return is_satisfied, lazy_constraints
 

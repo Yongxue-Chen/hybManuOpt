@@ -472,6 +472,8 @@ def stability_check_function(variables, solution, nx, ny, nz, tEnd):
 
         
 
+        
+
 
 
 

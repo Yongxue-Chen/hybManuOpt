@@ -94,11 +94,17 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
         return True # No voxels to check, considered stable.
 
     # --- 1. Initialization and Bounding Box Setup ---
+    # Validate input: check if all SM voxels are in the same z layer
     smPosList = []
+    z_coord=-1
     for smVoxIdx in smVoxIdxList:
         model[smVoxIdx] = 0 # Temporarily remove SM voxels to check support
         smPosList.append(idx2pos(smVoxIdx, nx, ny, nz))
-    
+        if z_coord==-1:
+            z_coord=smPosList[-1][2]
+        elif smPosList[-1][2]!=z_coord:
+            raise ValueError("All SM voxels must be in the same z layer")
+
     # Get the bounding box of the SM component
     boxRange = np.array([
         [min(p[0] for p in smPosList), max(p[0] for p in smPosList)],
@@ -135,12 +141,12 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
 
     if numConnectedComponents == 0:
         # No solid neighbors found. Stable only if on the build plate.
-        if smPosList[0][2] == 0:
+        if z_coord == 0:
             return True
         else:
             raise ValueError("The model is not stable before the SM")
     
-    if numConnectedComponents==1 and smPosList[0][2]>0:
+    if numConnectedComponents==1 and z_coord>0:
         # there is only one component
         # since before SM operation, the model is stable, and the voxel is not at ground
         # the component must be connected to the ground
@@ -188,11 +194,14 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
     numActiveComponents = len(initial_non_empty_indices)
     
     # Continue as long as there are un-grounded components with voxels to check
-    while any(q and not isGrounded[find_set(i)] for i, q in enumerate(componentVoxelQueues)):
-        for i in range(numConnectedComponents):
+    active_components = list(initial_non_empty_indices)
+    while active_components:
+        components_to_remove = []
+        
+        for i in active_components:
             i_root = find_set(i)
-            # Skip empty or already grounded components
             if not componentVoxelQueues[i] or isGrounded[i_root]:
+                components_to_remove.append(i)
                 continue
             
             idxCheck = componentVoxelQueues[i].pop(0)
@@ -219,7 +228,7 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
                         # --- Implementation for Comment 1 ---
                         # If all components merge into one and the SM is not on the ground plate,
                         # the structure is guaranteed to be stable.
-                        if numActiveComponents == 1 and smPosList[0][2] > 0:
+                        if numActiveComponents == 1 and z_coord > 0:
                             return True
                         
                         # After merging, if the new root component is grounded, we can stop exploring this path.
@@ -256,46 +265,58 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
                     # All queues for this root are empty, but it's not grounded. It's a floating island.
                     return False
 
+        # Safely remove the completed components
+        for comp in components_to_remove:
+            active_components.remove(comp)
+
     # Final check: are all components that had voxels initially, now grounded?
     return all(isGrounded[find_set(i)] for i in initial_non_empty_indices)
 
 def findConnectedComponents(startPos, componentIdx, model, modelSize, visited,
                             solidIdxList, boxRange):
-    
     """
-    Find connected components in the model.
-    
+    Find all voxels in a connected component of solid material using DFS.
+    This search is confined within a specified bounding box.
+
     Args:
-        startPos: Starting position of the connected component
-        componentIdx: Index of the connected component
+        startPos (np.ndarray): The starting position (x,y,z) for the search.
+                               The caller must ensure this is a valid, solid, unvisited voxel.
+        componentIdx (int): The identifier for the current component.
+        model (np.ndarray): The binary model of the structure.
+        modelSize (tuple): The dimensions (nx, ny, nz) of the model.
+        visited (np.ndarray): An array to track visited voxels.
+        solidIdxList (list): A list to be populated with the indices of voxels in the component.
+        boxRange (np.ndarray): The bounding box [[xmin, xmax], [ymin, ymax], [zmin, zmax]]
+                               that confines the search.
     """
-    
     nx, ny, nz = modelSize
     stack = [startPos]
+    
+    # Mark the starting voxel as visited. The caller ensures it's valid.
+    startIdx = pos2idx(startPos[0], startPos[1], startPos[2], nx, ny, nz)
+    visited[startIdx] = componentIdx
+    solidIdxList.append(startIdx)
 
     while stack:
         currentPos = stack.pop()
 
-        # 检查当前位置是否越界
-        if not (boxRange[0, 0] <= currentPos[0] <= boxRange[0, 1] and
-                boxRange[1, 0] <= currentPos[1] <= boxRange[1, 1] and
-                boxRange[2, 0] <= currentPos[2] <= boxRange[2, 1]):
-            continue
-
-        idx = pos2idx(currentPos[0], currentPos[1], currentPos[2], nx, ny, nz)
-
-        # 检查当前位置是否为固体或已被访问
-        if model[idx] == 0 or visited[idx] != 0:
-            continue
-
-        # 处理当前体素
-        visited[idx] = componentIdx
-        solidIdxList.append(idx)
-
-        # 将所有相邻体素加入栈中
+        # Explore neighbors
         for direction in neighborDirection:
             neighborPos = currentPos + direction
-            stack.append(neighborPos)
+
+            # Bounding box check
+            if not (boxRange[0, 0] <= neighborPos[0] <= boxRange[0, 1] and
+                    boxRange[1, 0] <= neighborPos[1] <= boxRange[1, 1] and
+                    boxRange[2, 0] <= neighborPos[2] <= boxRange[2, 1]):
+                continue
+
+            idx_neighbor = pos2idx(neighborPos[0], neighborPos[1], neighborPos[2], nx, ny, nz)
+
+            # If the neighbor is a solid and unvisited voxel, add it to the component
+            if model[idx_neighbor] == 1 and visited[idx_neighbor] == 0:
+                visited[idx_neighbor] = componentIdx
+                solidIdxList.append(idx_neighbor)
+                stack.append(neighborPos)
 
 
     

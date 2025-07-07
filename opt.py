@@ -446,17 +446,35 @@ def model_construction_function(current_solution, nx, ny, nz, tEnd):
     
     return variables_def, objective_expr, constraints
 
-def example_constraint_check_function(variables, solution):
+def stability_check_function(variables, solution, nx, ny, nz, tEnd):
     """
     示例约束检查函数（用于延迟约束）
     
     Args:
         variables: 变量对象字典
         solution: 当前解，numpy数组
+        nx, ny, nz: 模型维度
+        tEnd: 结束时间
         
     Returns:
         (is_satisfied, lazy_constraints): 是否满足约束，以及需要添加的延迟约束
     """
+
+    optTime=OperationTime(nx, ny, nz)
+    optTime.from_optimization_variables(solution)
+
+    # 对optTime.time_matrix的第二列中的元素按照从小到大排序，获取元素位置的序列
+    sorted_idx=np.argsort(optTime.time_matrix[:,1])
+
+    for voxIdx in sorted_idx:
+        if optTime.time_matrix[voxIdx,1]>=tEnd:
+            break
+
+        
+
+
+
+
     # TODO: 在这里实现您的约束检查逻辑
     
     is_satisfied = True

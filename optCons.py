@@ -349,7 +349,7 @@ def process_idx_batch(idx_batch, targetModel, initTime, tEnd):
         targetModelNow=copy.deepcopy(targetModel)
         satisfied, AElementTmp, AColTmp, bElementTmp = process_single_idx(idx, targetModelNow, initTime, tEnd)
         if not satisfied:
-            return False, None, None, None
+            return False, AElementTmp, AColTmp, bElementTmp
         AElement_batch.extend(AElementTmp)
         ACol_batch.extend(AColTmp)
         bElement_batch.extend(bElementTmp)
@@ -403,7 +403,7 @@ def process_single_idx(idx, targetModelNow, initTime, tEnd):
     # SM constraints
     if (tIdx[1] <= tEnd and zPos < targetModelNow.nz - 1 and 
         0 < xPos < targetModelNow.nx - 1 and 0 < yPos < targetModelNow.ny - 1):
-        satisfied, AElementTmp, AColTmp, bElementTmp = consSMCollisionFree(initTime, targetModelNow, tNow, idx)
+        satisfied, AElementTmp, AColTmp, bElementTmp, _ = consSMCollisionFree(initTime, targetModelNow, tNow, idx)
         if not satisfied:
             return False, [], [], []
         AElement.extend(AElementTmp)

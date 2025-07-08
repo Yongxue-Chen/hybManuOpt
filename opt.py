@@ -13,7 +13,7 @@ class GurobiOptimizationFramework:
     使用Gurobi内置回调函数处理延迟约束，支持初始解
     """
     
-    def __init__(self, gurobi_params: Optional[Dict] = None, threshold: float = 1e-6):
+    def __init__(self, targetModel: Model, gurobi_params: Optional[Dict] = None, threshold: float = 1e-6):
         """
         初始化优化框架
         
@@ -24,6 +24,7 @@ class GurobiOptimizationFramework:
         self.gurobi_params = gurobi_params or {}
         self.threshold = threshold
         self.model = None
+        self.targetModel = targetModel
         
         # 回调函数相关
         self.constraint_check_functions: List[Callable] = []
@@ -54,9 +55,7 @@ class GurobiOptimizationFramework:
         """
         self.constraint_check_functions = functions
     
-    def create_model_from_construction_function(self, current_solution: Optional[np.ndarray],
-                                              nx: int, ny: int, nz: int, 
-                                              tEnd: float, **kwargs) -> gp.Model:
+    def create_model_from_construction_function(self, current_solution: Optional[np.ndarray], **kwargs) -> gp.Model:
         """
         创建Gurobi模型，包含完整的模型构建逻辑
         
@@ -70,11 +69,11 @@ class GurobiOptimizationFramework:
             Gurobi模型对象
         """
         # 参数验证 - 添加类型检查防止"Never"值
-        if str(nx) == "Never" or str(ny) == "Never" or str(nz) == "Never" or str(tEnd) == "Never":
-            raise ValueError(f"参数包含无效值: nx={nx}, ny={ny}, nz={nz}, tEnd={tEnd}")
+        if str(self.targetModel.nx) == "Never" or str(self.targetModel.ny) == "Never" or str(self.targetModel.nz) == "Never" or str(self.targetModel.tEnd) == "Never":
+            raise ValueError(f"参数包含无效值: nx={self.targetModel.nx}, ny={self.targetModel.ny}, nz={self.targetModel.nz}, tEnd={self.targetModel.tEnd}")
         
         # 确保参数为数值类型
-        nx, ny, nz, tEnd = int(nx), int(ny), int(nz), float(tEnd)
+        nx, ny, nz, tEnd = int(self.targetModel.nx), int(self.targetModel.ny), int(self.targetModel.nz), float(self.targetModel.tEnd)
         
         # 确定使用的解
         solution_to_use = current_solution
@@ -129,8 +128,7 @@ class GurobiOptimizationFramework:
         
         # 添加约束
         subModel = subModelPara(posStart=(0, 0, 0), modelSize=(nx, ny, nz))
-        targetModel = Model(nx, ny, nz, tEnd)
-        satisfied, AElement, ACol, bElement = consHMLN(currentOptTime, subModel, targetModel, tEnd)
+        satisfied, AElement, ACol, bElement = consHMLN(currentOptTime, subModel, self.targetModel, tEnd)
         if not satisfied:
             raise ValueError("Constraint not satisfied")
         
@@ -214,14 +212,11 @@ class GurobiOptimizationFramework:
                 return True
         return False
     
-    def optimize(self, nx: int, ny: int, nz: int, tEnd: float,
-                max_reconstructions: int = 10, **kwargs) -> Dict[str, Any]:
+    def optimize(self, max_reconstructions: int = 10, **kwargs) -> Dict[str, Any]:
         """
         主优化函数
         
         Args:
-            nx, ny, nz: 模型维度
-            tEnd: 结束时间
             max_reconstructions: 最大重构次数
             **kwargs: 其他参数
             
@@ -241,7 +236,7 @@ class GurobiOptimizationFramework:
             try:
                 # 创建模型
                 model = self.create_model_from_construction_function(
-                    current_solution=current_solution, nx=nx, ny=ny, nz=nz, tEnd=tEnd, **kwargs)
+                    current_solution=current_solution, **kwargs)
                 
                 # 设置延迟约束回调
                 model.setParam('LazyConstraints', 1)
@@ -433,12 +428,15 @@ def stability_check_function(variables, solution, nx, ny, nz, tEnd):
 if __name__ == "__main__":
     from functools import partial
 
-    # 定义问题参数
+    # 目标函数和初始解（需要外部提供）
     nx, ny, nz = 5, 5, 5
     tEnd = 100
+    targetModel = Model(nx, ny, nz, tEnd)
+    initial_solution = np.zeros(2 * nx * ny * nz)
     
     # 创建优化框架实例
     optimizer = GurobiOptimizationFramework(
+        targetModel=targetModel,
         gurobi_params={
             'MIPGap': 0.01,
             'TimeLimit': 300,
@@ -447,8 +445,7 @@ if __name__ == "__main__":
         threshold=1e-6
     )
     
-    # 设置初始解（可选）
-    initial_solution = np.zeros(2 * nx * ny * nz)
+    # 设置初始解
     optimizer.set_initial_solution(initial_solution)
     
     # 使用 functools.partial 包装需要额外参数的约束检查函数
@@ -463,10 +460,6 @@ if __name__ == "__main__":
     
     # 执行优化（现在直接传递参数）
     result = optimizer.optimize(
-        nx=nx,
-        ny=ny,
-        nz=nz,
-        tEnd=tEnd,
         max_reconstructions=5
     )
     

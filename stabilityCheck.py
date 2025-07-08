@@ -90,6 +90,12 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
     Returns:
         bool: True if the structure is stable at the SMs, False otherwise.
     """
+
+    for smVoxIdx in smVoxIdxList:
+        if model[smVoxIdx] !=0:
+            raise ValueError("The voxels acted by SM must be 0")
+
+    
     if not smVoxIdxList:
         return True # No voxels to check, considered stable.
 
@@ -98,7 +104,6 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
     smPosList = []
     z_coord=-1
     for smVoxIdx in smVoxIdxList:
-        model[smVoxIdx] = 0 # Temporarily remove SM voxels to check support
         smPosList.append(idx2pos(smVoxIdx, nx, ny, nz))
         if z_coord==-1:
             z_coord=smPosList[-1][2]
@@ -191,9 +196,11 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
 
     # --- 4. Iteratively Explore and Merge Components (BFS-like) ---
     # To keep track of the number of separate, active component sets
+    # the "active" here means that the connected components
     numActiveComponents = len(initial_non_empty_indices)
     
     # Continue as long as there are un-grounded components with voxels to check
+    # the "active" here means that the components need to be checked
     active_components = list(initial_non_empty_indices)
     while active_components:
         components_to_remove = []
@@ -233,7 +240,6 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
                         
                         # After merging, if the new root component is grounded, we can stop exploring this path.
                         if isGrounded[new_root]:
-                            isGrounded[i_root] = True
                             break # Break from neighbor exploration
                 else: # Neighbor is a solid voxel not visited before (outside initial bbox)
                     visited[idxNeighbor] = i_root + 1

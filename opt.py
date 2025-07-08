@@ -13,7 +13,7 @@ class GurobiOptimizationFramework:
     使用Gurobi内置回调函数处理延迟约束，支持初始解
     """
     
-    def __init__(self, targetModel: Model, gurobi_params: Optional[Dict] = None, threshold: float = 1e-6):
+    def __init__(self, targetModel: Model, subModel: subModelPara, gurobi_params: Optional[Dict] = None, threshold: float = 1e-6):
         """
         初始化优化框架
         
@@ -25,6 +25,7 @@ class GurobiOptimizationFramework:
         self.threshold = threshold
         self.model = None
         self.targetModel = targetModel
+        self.subModel = subModel
         
         # 回调函数相关
         self.constraint_check_functions: List[Callable] = []
@@ -68,10 +69,7 @@ class GurobiOptimizationFramework:
         Returns:
             Gurobi模型对象
         """
-        # 参数验证 - 添加类型检查防止"Never"值
-        if str(self.targetModel.nx) == "Never" or str(self.targetModel.ny) == "Never" or str(self.targetModel.nz) == "Never" or str(self.targetModel.tEnd) == "Never":
-            raise ValueError(f"参数包含无效值: nx={self.targetModel.nx}, ny={self.targetModel.ny}, nz={self.targetModel.nz}, tEnd={self.targetModel.tEnd}")
-        
+
         # 确保参数为数值类型
         nx, ny, nz, tEnd = int(self.targetModel.nx), int(self.targetModel.ny), int(self.targetModel.nz), float(self.targetModel.tEnd)
         
@@ -85,12 +83,6 @@ class GurobiOptimizationFramework:
                 solution_to_use = np.zeros(2 * nx * ny * nz)
         
         n = len(solution_to_use)  # 获取变量维度
-        
-        # 定义变量类型
-        try:
-            vtype = GRB.CONTINUOUS
-        except NameError:
-            vtype = 'C'  # Gurobi的字符串等价值
             
         # 构建当前操作时间
         currentOptTime = OperationTime(nx, ny, nz)
@@ -106,8 +98,8 @@ class GurobiOptimizationFramework:
         # 创建变量并存储在模型中
         model._variables = {}
         
-        # 直接通过 addVars 添加自变量 'Dt'
-        dt_vars = model.addVars(n, lb=0, ub=tEnd + 1, vtype=vtype, name="Dt")
+        # 通过 addVars 添加自变量 'Dt'
+        dt_vars = model.addVars(n, lb=0, ub=tEnd + 1, vtype=GRB.CONTINUOUS, name="Dt")
         model._variables['Dt'] = dt_vars
         
         # 设置初始值
@@ -127,8 +119,7 @@ class GurobiOptimizationFramework:
         model.setObjective(objective, GRB.MINIMIZE)
         
         # 添加约束
-        subModel = subModelPara(posStart=(0, 0, 0), modelSize=(nx, ny, nz))
-        satisfied, AElement, ACol, bElement = consHMLN(currentOptTime, subModel, self.targetModel, tEnd)
+        satisfied, AElement, ACol, bElement = consHMLN(currentOptTime, self.subModel, self.targetModel, tEnd)
         if not satisfied:
             raise ValueError("Constraint not satisfied")
         
@@ -155,22 +146,14 @@ class GurobiOptimizationFramework:
         if where == GRB.Callback.MIPSOL:
             self.callback_count += 1
             
-            # 获取当前解 - 修改为构造numpy数组
-            current_solution = None
-            for var_name, var_obj in model._variables.items():
-                if hasattr(var_obj, 'select'):  # 多维变量
-                    # 假设主要变量是多维数组，构造numpy向量
-                    if var_name == 'Dt':  # 假设主要变量名为 'Dt'
-                        solution_values = []
-                        for key in sorted(var_obj.keys()):
-                            solution_values.append(model.cbGetSolution(var_obj[key]))
-                        current_solution = np.array(solution_values)
-                        break
-                else:  # 单个变量
-                    # 如果是单个变量，创建包含单个元素的数组
-                    if var_name == 'Dt':
-                        current_solution = np.array([model.cbGetSolution(var_obj)])
-                        break
+            # 从回调中获取当前解，并构造成一个Numpy数组
+            dt_vars = model._variables['Dt']
+            
+            # 通过对键进行排序来保证解向量中值的一致顺序
+            solution_values = [
+                model.cbGetSolution(dt_vars[key]) for key in sorted(dt_vars.keys())
+            ]
+            current_solution = np.array(solution_values)
             
             # 检查约束并添加延迟约束
             constraints_added_this_callback = 0
@@ -433,10 +416,12 @@ if __name__ == "__main__":
     tEnd = 100
     targetModel = Model(nx, ny, nz, tEnd)
     initial_solution = np.zeros(2 * nx * ny * nz)
+    subModel = subModelPara(posStart=(0, 0, 0), modelSize=(nx, ny, nz))
     
     # 创建优化框架实例
     optimizer = GurobiOptimizationFramework(
         targetModel=targetModel,
+        subModel=subModel,
         gurobi_params={
             'MIPGap': 0.01,
             'TimeLimit': 300,

@@ -3,8 +3,9 @@ from gurobipy import GRB
 import numpy as np
 from typing import Callable, Any, Dict, List, Optional, Union, Tuple
 import time
-from model import Model, OperationTime
+from model import Model, OperationTime, subModelPara
 from optCons import consHMLN
+from functools import partial
 
 class GurobiOptimizationFramework:
     """
@@ -12,7 +13,7 @@ class GurobiOptimizationFramework:
     使用Gurobi内置回调函数处理延迟约束，支持初始解
     """
     
-    def __init__(self, target_model, gurobi_params: Optional[Dict] = None, threshold: float = 1e-6):
+    def __init__(self, gurobi_params: Optional[Dict] = None, threshold: float = 1e-6):
         """
         初始化优化框架
         
@@ -20,15 +21,12 @@ class GurobiOptimizationFramework:
             gurobi_params: Gurobi参数字典
             threshold: 变量阈值，低于此值需要重新构造问题
         """
-        self.target_model = target_model
-
         self.gurobi_params = gurobi_params or {}
         self.threshold = threshold
         self.model = None
         
         # 回调函数相关
         self.constraint_check_functions: List[Callable] = []
-        self.model_construction_function: Optional[Callable] = None
         
         # 优化历史记录
         self.optimization_history = []
@@ -56,35 +54,49 @@ class GurobiOptimizationFramework:
         """
         self.constraint_check_functions = functions
     
-    def set_model_construction_function(self, function: Callable):
+    def create_model_from_construction_function(self, current_solution: Optional[np.ndarray],
+                                              nx: int, ny: int, nz: int, 
+                                              tEnd: float, **kwargs) -> gp.Model:
         """
-        设置统一的模型构建函数（用于初始构建和重新构建）
-        
-        Args:
-            function: 模型构建函数，接受当前解和其他参数，返回(variables, objective_expr, constraints)
-        """
-        self.model_construction_function = function
-    
-    def create_model_from_construction_function(self, current_solution: Optional[np.ndarray] = None,
-                                              **kwargs) -> gp.Model:
-        """
-        使用统一的构建函数创建Gurobi模型
+        创建Gurobi模型，包含完整的模型构建逻辑
         
         Args:
             current_solution: 当前解（首次构建时为None或初始解）
-            **kwargs: 传递给构建函数的其他参数
+            nx, ny, nz: 模型维度
+            tEnd: 结束时间
+            **kwargs: 其他参数
             
         Returns:
             Gurobi模型对象
         """
-        if self.model_construction_function is None:
-            raise ValueError("未设置模型构建函数，请先调用set_model_construction_function")
+        # 参数验证 - 添加类型检查防止"Never"值
+        if str(nx) == "Never" or str(ny) == "Never" or str(nz) == "Never" or str(tEnd) == "Never":
+            raise ValueError(f"参数包含无效值: nx={nx}, ny={ny}, nz={nz}, tEnd={tEnd}")
         
-        # 调用用户定义的构建函数
-        variables_def, objective_expr, constraints = self.model_construction_function(
-            current_solution, **kwargs
-        )
+        # 确保参数为数值类型
+        nx, ny, nz, tEnd = int(nx), int(ny), int(nz), float(tEnd)
         
+        # 确定使用的解
+        solution_to_use = current_solution
+        if solution_to_use is None:
+            if self.initial_solution is not None:
+                solution_to_use = self.initial_solution
+            else:
+                # 如果没有提供任何解，创建零向量
+                solution_to_use = np.zeros(2 * nx * ny * nz)
+        
+        n = len(solution_to_use)  # 获取变量维度
+        
+        # 定义变量类型
+        try:
+            vtype = GRB.CONTINUOUS
+        except NameError:
+            vtype = 'C'  # Gurobi的字符串等价值
+            
+        # 构建当前操作时间
+        currentOptTime = OperationTime(nx, ny, nz)
+        currentOptTime.from_optimization_variables(solution_to_use)
+
         # 创建Gurobi模型
         model = gp.Model("optimization_model")
         
@@ -94,59 +106,43 @@ class GurobiOptimizationFramework:
         
         # 创建变量并存储在模型中
         model._variables = {}
-        model._variable_mapping = {}  # 用于快速查找变量
         
-        for var_name, var_config in variables_def.items():
-            if len(var_config) == 4:
-                lb, ub, vtype, shape = var_config
-                initial_values = None
-            elif len(var_config) == 5:
-                lb, ub, vtype, shape, initial_values = var_config
-            else:
-                raise ValueError(f"变量 {var_name} 配置格式错误")
-            
-            # 多维变量数组
-            if isinstance(shape, int):
-                shape = (shape,)
-            var_array = model.addVars(*shape, lb=lb, ub=ub, vtype=vtype, name=var_name)
-            model._variables[var_name] = var_array
-            
-            # 设置初始值 - 修改为处理numpy数组
-            for key in var_array.keys():
-                model._variable_mapping[f"{var_name}_{key}"] = var_array[key]
-                
-                if initial_values is not None:
-                    if isinstance(initial_values, np.ndarray) and key[0] < len(initial_values):
-                        var_array[key].start = initial_values[key[0]]
-                    elif hasattr(initial_values, '__getitem__'):
-                        try:
-                            var_array[key].start = initial_values[key]
-                        except:
-                            pass
-                elif current_solution is not None and key[0] < len(current_solution):
-                    var_array[key].start = current_solution[key[0]]
-                elif self.initial_solution is not None and key[0] < len(self.initial_solution):
-                    var_array[key].start = self.initial_solution[key[0]]
+        # 直接通过 addVars 添加自变量 'Dt'
+        dt_vars = model.addVars(n, lb=0, ub=tEnd + 1, vtype=vtype, name="Dt")
+        model._variables['Dt'] = dt_vars
+        
+        # 设置初始值
+        if solution_to_use is not None:
+            # 将 numpy 数组转换为列表以设置初始值
+            model.setAttr("Start", list(dt_vars.values()), solution_to_use.tolist())
         
         # 更新模型以添加变量
         model.update()
         
         # 设置目标函数
-        if callable(objective_expr):
-            obj_expr = objective_expr(model._variables)
-        else:
-            obj_expr = objective_expr
-        model.setObjective(obj_expr, GRB.MINIMIZE)
+        w1 = 1.0
+        objective = gp.LinExpr()
+        for i in range(nx*ny*nz):
+            if solution_to_use[2*i] + solution_to_use[2*i+1] < tEnd:
+                objective += w1 * dt_vars[2*i+1]
+        model.setObjective(objective, GRB.MINIMIZE)
         
         # 添加约束
+        subModel = subModelPara(posStart=(0, 0, 0), modelSize=(nx, ny, nz))
+        targetModel = Model(nx, ny, nz, tEnd)
+        satisfied, AElement, ACol, bElement = consHMLN(currentOptTime, subModel, targetModel, tEnd)
+        if not satisfied:
+            raise ValueError("Constraint not satisfied")
+        
+        # 创建线性不等式约束
+        constraints = create_linear_constraints_from_sparse_format(
+            AElement, ACol, bElement, model._variables, 'Dt'
+        )
+        
+        # 添加约束到模型
         for i, constraint in enumerate(constraints):
-            if callable(constraint):
-                constraint_expr = constraint(model._variables)
-            else:
-                constraint_expr = constraint
-                
-            if constraint_expr is not None:
-                model.addConstr(constraint_expr, name=f"constraint_{i}")
+            if constraint is not None:
+                model.addConstr(constraint, name=f"constraint_{i}")
         
         return model
     
@@ -218,21 +214,20 @@ class GurobiOptimizationFramework:
                 return True
         return False
     
-    def optimize(self, construction_kwargs: Optional[Dict] = None,
-                max_reconstructions: int = 10) -> Dict[str, Any]:
+    def optimize(self, nx: int, ny: int, nz: int, tEnd: float,
+                max_reconstructions: int = 10, **kwargs) -> Dict[str, Any]:
         """
         主优化函数
         
         Args:
-            construction_kwargs: 传递给模型构建函数的参数
+            nx, ny, nz: 模型维度
+            tEnd: 结束时间
             max_reconstructions: 最大重构次数
+            **kwargs: 其他参数
             
         Returns:
             最终优化结果
         """
-        if construction_kwargs is None:
-            construction_kwargs = {}
-            
         reconstruction_count = 0
         current_solution = self.initial_solution  # 现在是numpy数组
         
@@ -244,9 +239,9 @@ class GurobiOptimizationFramework:
             self.lazy_constraints_added = 0
             
             try:
-                # 使用统一的构建函数创建模型
+                # 创建模型
                 model = self.create_model_from_construction_function(
-                    current_solution=current_solution)
+                    current_solution=current_solution, nx=nx, ny=ny, nz=nz, tEnd=tEnd, **kwargs)
                 
                 # 设置延迟约束回调
                 model.setParam('LazyConstraints', 1)
@@ -295,7 +290,7 @@ class GurobiOptimizationFramework:
                     print(f"回调次数: {self.callback_count}, 添加延迟约束: {self.lazy_constraints_added}")
                     
                     # 检查是否需要重新构造模型
-                    if self.check_threshold_condition(current_solution):
+                    if current_solution is not None and self.check_threshold_condition(current_solution):
                         print("检测到变量值低于阈值，需要重新构造模型...")
                         reconstruction_count += 1
                         continue
@@ -389,62 +384,6 @@ def create_linear_constraints_from_sparse_format(AElement, ACol, bElement, varia
         constraints.append(constraint_expr <= elementB)
     
     return constraints
-    
-def model_construction_function(current_solution, nx, ny, nz, tEnd):
-    """
-    Args:
-        current_solution: 当前解，numpy数组
-        nx, ny, nz: 模型维度
-        tEnd: 结束时间
-        
-    Returns:
-        (variables_def, objective_expr, constraints): 变量定义、目标函数、约束列表
-    """
-    # 从初始解获取变量维度
-    if current_solution is None:
-        raise ValueError("必须提供初始解来定义变量维度")
-    
-    n = len(current_solution)  # 获取变量维度
-    # 定义n维连续变量向量
-    variables_def = {
-        'Dt': (0, tEnd+1, GRB.CONTINUOUS, (n,), current_solution),  # n维连续变量向量，使用初始解
-    }
-    
-    # construct currentOptTime
-    currentOptTime = OperationTime(nx, ny, nz)
-    currentOptTime.from_optimization_variables(current_solution)
-
-    # 目标函数
-    def objective_expr(variables):
-        w1 = 1.0
-        objective = 0.0
-        
-        # 最小化时间
-        for i in range(nx*ny*nz):
-            if current_solution[2*i] + current_solution[2*i+1] < tEnd:
-                # 访问Dt变量数组的第(2*i+1)个元素
-                objective += variables['Dt'][2*i+1]
-        
-        return w1 * objective
-
-    # 约束定义
-    satisfied, AElement, ACol, bElement = consHMLN(currentOptTime, nx, ny, nz, tEnd)
-    if not satisfied:
-        raise ValueError("Constraint not satisfied")
-    
-    # 创建约束函数
-    def create_constraints(variables):
-        """
-        创建线性不等式约束的函数
-        """
-        return create_linear_constraints_from_sparse_format(
-            AElement, ACol, bElement, variables, 'Dt'
-        )
-    
-    # 约束列表
-    constraints = [create_constraints]
-    
-    return variables_def, objective_expr, constraints
 
 def stability_check_function(variables, solution, nx, ny, nz, tEnd):
     """
@@ -492,6 +431,12 @@ def stability_check_function(variables, solution, nx, ny, nz, tEnd):
 
 # 使用示例
 if __name__ == "__main__":
+    from functools import partial
+
+    # 定义问题参数
+    nx, ny, nz = 5, 5, 5
+    tEnd = 100
+    
     # 创建优化框架实例
     optimizer = GurobiOptimizationFramework(
         gurobi_params={
@@ -503,31 +448,25 @@ if __name__ == "__main__":
     )
     
     # 设置初始解（可选）
-    # initial_solution = 
+    initial_solution = np.zeros(2 * nx * ny * nz)
     optimizer.set_initial_solution(initial_solution)
+    
+    # 使用 functools.partial 包装需要额外参数的约束检查函数
+    stability_check_with_params = partial(stability_check_function, 
+                                          nx=nx, ny=ny, nz=nz, tEnd=tEnd)
     
     # 设置约束检查函数
     optimizer.set_constraint_check_functions([
-        example_constraint_check_function,
+        stability_check_with_params,
         # 可以添加更多检查函数
     ])
     
-    # 设置统一的模型构建函数
-    optimizer.set_model_construction_function(
-        model_construction_function
-    )
-    
-    # 定义传递给构建函数的参数
-    construction_kwargs = {
-        'problem_params': {
-            'param1': 10,
-            'param2': 'some_value'
-        }
-    }
-    
-    # 执行优化
+    # 执行优化（现在直接传递参数）
     result = optimizer.optimize(
-        construction_kwargs=construction_kwargs,
+        nx=nx,
+        ny=ny,
+        nz=nz,
+        tEnd=tEnd,
         max_reconstructions=5
     )
     

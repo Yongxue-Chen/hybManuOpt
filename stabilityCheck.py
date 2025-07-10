@@ -153,7 +153,7 @@ def _explore_and_check_connectivity(model, nx, ny, nz, visited, numConnectedComp
         # Collect all voxels belonging to the identified ungrounded root component.
         unGroundedVoxels = {idx for idx, compIdx_plus_1 in visited.items() if find_set(compIdx_plus_1 - 1) == unGroundedRoot}
         if not unGroundedVoxels:
-            return True, set(), -1, -1 # Fallback, should not be reached
+            return True, set(), -1, [] # Fallback, should not be reached
         
         # Get a sample voxel from the ungrounded component.
         any_voxel_in_component = next(iter(unGroundedVoxels))
@@ -170,14 +170,20 @@ def _explore_and_check_connectivity(model, nx, ny, nz, visited, numConnectedComp
                 if neighborIdx not in unGroundedVoxels:
                     outerBoundaryVoxels.add(neighborIdx)
 
-        # Find a sample voxel from any other component, if one exists.
-        any_voxel_in_other_component = -1
-        if len(roots_set) > 1:
+        # Find a sample voxel from each other component, if any exist.
+        other_components_voxels = []
+        other_roots = roots_set - {unGroundedRoot}
+        if other_roots:
+            found_roots = set()
             for idx, compIdx_plus_1 in visited.items():
-                if find_set(compIdx_plus_1 - 1) != unGroundedRoot:
-                    any_voxel_in_other_component = idx
-                    break
-        return False, outerBoundaryVoxels, any_voxel_in_component, any_voxel_in_other_component
+                root = find_set(compIdx_plus_1 - 1)
+                if root in other_roots and root not in found_roots:
+                    other_components_voxels.append(idx)
+                    found_roots.add(root)
+                    # Optimization: if we have found a sample for every other root, we can stop.
+                    if len(found_roots) == len(other_roots):
+                        break
+        return False, outerBoundaryVoxels, any_voxel_in_component, other_components_voxels
 
     # Populate initial component data
     for idx in solidIdxList:
@@ -191,7 +197,7 @@ def _explore_and_check_connectivity(model, nx, ny, nz, visited, numConnectedComp
 
     # If all initial components are already connected to the bottom, it's stable.
     if all(isGrounded[find_set(i)] for i in initial_non_empty_indices):
-        return True, set(), -1, -1
+        return True, set(), -1, []
 
     # --- 4. Iteratively Explore and Merge Components (BFS-like) ---
     # To keep track of the number of separate, active component sets
@@ -236,7 +242,7 @@ def _explore_and_check_connectivity(model, nx, ny, nz, visited, numConnectedComp
                         # If all components merge into one and the SM is not on the ground plate,
                         # the structure is guaranteed to be stable.
                         if numActiveComponents == 1 and z_coord > 0:
-                            return True, set(), -1, -1
+                            return True, set(), -1, []
                         
                         # After merging, if the new root component is grounded, we can stop exploring this path.
                         if isGrounded[new_root]:
@@ -293,7 +299,7 @@ def _explore_and_check_connectivity(model, nx, ny, nz, visited, numConnectedComp
             roots = {find_set(i) for i in initial_non_empty_indices}
             return _get_unstable_component_info(unGroundedRoot, roots)
 
-    return True, set(), -1, -1
+    return True, set(), -1, []
 
 def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
     """
@@ -326,11 +332,12 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
 
     Returns:
         tuple:
-            - If stable: (True, set(), -1, -1)
-            - If unstable: (False, outer_boundary, any_voxel_in_comp, any_voxel_in_other_comp)
+            - If stable: (True, set(), -1, [])
+            - If unstable: (False, outer_boundary, any_voxel_in_comp, other_components_voxels)
               - outer_boundary (set): Voxel indices adjacent to the ungrounded component but not in it.
               - any_voxel_in_comp (int): Index of one voxel from the ungrounded component.
-              - any_voxel_in_other_comp (int): Index of one voxel from another component (-1 if no other component).
+              - other_components_voxels (list[int]): A list containing one sample voxel index 
+                from each of the other components. Returns [] if no other components exist.
     """
 
     for smVoxIdx in smVoxIdxList:
@@ -339,7 +346,7 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
 
     
     if not smVoxIdxList:
-        return True, set(), -1, -1 # No voxels to check, considered stable.
+        return True, set(), -1, [] # No voxels to check, considered stable.
 
     # --- 1. Initialize Components & Bounding Box ---
     init_data = _initialize_components(model, smVoxIdxList, nx, ny, nz, boxSize)
@@ -352,7 +359,7 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
     if numConnectedComponents == 0:
         # No solid neighbors found. Stable only if on the build plate.
         if z_coord == 0:
-            return True, set(), -1, -1
+            return True, set(), -1, []
         else:
             raise ValueError("The model is not stable before the SM")
     
@@ -361,7 +368,7 @@ def checkStabilityAtSM(model, smVoxIdxList, nx, ny, nz, boxSize=5):
         # since before SM operation, the model is stable, and the voxel is not at ground
         # the component must be connected to the ground
         # so after SM, the model is stable
-        return True, set(), -1, -1
+        return True, set(), -1, []
 
     # --- 3. Run Full Connectivity Analysis ---
     return _explore_and_check_connectivity(
